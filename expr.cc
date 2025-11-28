@@ -13,10 +13,11 @@
 
 using namespace std;
 using impedance::matched;
-
+    /** modified to disable weird functions
 shared_ptr<value_expr> value_expr::factory(prod *p, sqltype *type_constraint)
 {
   try {
+
     if (1 == d20() && p->level < d6() && window_function::allowed(p))
       return make_shared<window_function>(p, type_constraint);
     else if (1 == d42() && p->level < d6())
@@ -29,15 +30,52 @@ shared_ptr<value_expr> value_expr::factory(prod *p, sqltype *type_constraint)
       return make_shared<atomic_subselect>(p, type_constraint);
     else if (p->level< d6() && d9()==1)
       return make_shared<case_expr>(p, type_constraint);
-    else if (p->scope->refs.size() && d20() > 1)
+    else 
+    if (p->scope->refs.size() && d20() > 1)
       return make_shared<column_reference>(p, type_constraint);
     else
       return make_shared<const_expr>(p, type_constraint);
+  
+   // Prefer column reference if available
+    if (p->scope->refs.size()) {
+      return make_shared<column_reference>(p, type_constraint);
+    }
+
+    // Otherwise return a simple constant
+    return make_shared<const_expr>(p, type_constraint);
+
+
   } catch (runtime_error &e) {
   }
   p->retry();
   return factory(p, type_constraint);
 }
+    */
+shared_ptr<value_expr> value_expr::factory(prod *p, sqltype *type_constraint)
+{
+  try {
+    // Allow aggregates only in SELECT list (not in WHERE, JOIN, etc.)
+    if (dynamic_cast<select_list*>(p)) {
+      // ~1/6 of the time, generate an aggregate instead of a simple expr
+      if (d6() == 1) {
+        return make_shared<funcall>(p, type_constraint, true);
+      }
+    }
+
+    // Prefer column reference if available
+    if (p->scope->refs.size()) {
+      return make_shared<column_reference>(p, type_constraint);
+    }
+
+    // Otherwise fall back to a simple constant
+    return make_shared<const_expr>(p, type_constraint);
+
+  } catch (runtime_error &e) {
+  }
+  p->retry();
+  return factory(p, type_constraint);
+}
+
 
 case_expr::case_expr(prod *p, sqltype *type_constraint)
   : value_expr(p)
@@ -206,10 +244,14 @@ const_expr::const_expr(prod *p, sqltype *type_constraint)
   else
     expr += "cast(null as " + type->name + ")";
 }
-
+/* modified to disable weird functions
 funcall::funcall(prod *p, sqltype *type_constraint, bool agg)
   : value_expr(p), is_aggregate(agg)
 {
+  // Added to prevent nested aggregates
+  if (agg && dynamic_cast<funcall*>(p->pprod)) {
+    fail("nested aggregate not allowed");
+  }
   if (type_constraint == scope->schema->internaltype)
     fail("cannot call functions involving internal type");
 
@@ -259,6 +301,42 @@ funcall::funcall(prod *p, sqltype *type_constraint, bool agg)
     parms.push_back(expr);
   }
 }
+*/
+funcall::funcall(prod *p, sqltype *type_constraint, bool agg)
+  : value_expr(p), is_aggregate(agg)
+{
+  if (!agg)
+    fail("non-aggregate functions disabled");
+
+  // prevent nested aggregates
+  if (agg && dynamic_cast<funcall*>(p->pprod))
+    fail("nested aggregate not allowed");
+
+  auto &all_aggs = p->scope->schema->aggregates;
+
+  if (all_aggs.empty())
+    fail("no aggregates available");
+
+  proc = &random_pick<>(all_aggs);
+  type = proc->restype;
+
+  // COUNT(*) case
+  if (proc->argtypes.size() == 0)
+    return;
+
+  sqltype *argtype = proc->argtypes[0];
+
+  shared_ptr<value_expr> arg;
+
+  auto candidates = scope->refs_of_type(argtype);
+  if (!candidates.empty())
+      arg = make_shared<column_reference>(this, argtype);
+  else
+      arg = make_shared<const_expr>(this, argtype);
+
+  parms.push_back(arg);
+}
+
 
 void funcall::out(std::ostream &out)
 {

@@ -218,6 +218,7 @@ schema_pqxx::schema_pqxx(std::string &conninfo, bool no_catalog) : c(conninfo)
   cerr << "done." << endl;
 
   cerr << "Loading routines...";
+  /* modified to avoid pg_catalog and information_schema system functions 
   r = w.exec("select (select nspname from pg_namespace where oid = pronamespace), oid, prorettype, proname "
 	     "from pg_proc "
 	     "where prorettype::regtype::text not in ('event_trigger', 'trigger', 'opaque', 'internal') "
@@ -225,6 +226,25 @@ schema_pqxx::schema_pqxx(std::string &conninfo, bool no_catalog) : c(conninfo)
 	     "and proname <> 'pg_event_trigger_table_rewrite_oid' "
 	     "and proname !~ '^ri_fkey_' "
 	     "and not (proretset or " + procedure_is_aggregate + " or " + procedure_is_window + ") ");
+  */
+  std::string routines_query =
+    "select (select nspname from pg_namespace where oid = pronamespace), "
+    "       oid, prorettype, proname "
+    "from pg_proc "
+    "where prorettype::regtype::text not in "
+    "      ('event_trigger', 'trigger', 'opaque', 'internal') "
+    "  and proname <> 'pg_event_trigger_table_rewrite_reason' "
+    "  and proname <> 'pg_event_trigger_table_rewrite_oid' "
+    "  and proname !~ '^ri_fkey_' "
+    "  and not (proretset or " + procedure_is_aggregate + " or " + procedure_is_window + ") ";
+
+if (no_catalog) {
+    routines_query +=
+        "  and (select nspname from pg_namespace where oid = pronamespace) "
+        "      not in ('pg_catalog', 'information_schema') ";
+}
+
+r = w.exec(routines_query);
 
   for (auto row : r) {
     routine proc(row[0].as<string>(),
@@ -253,6 +273,7 @@ schema_pqxx::schema_pqxx(std::string &conninfo, bool no_catalog) : c(conninfo)
   cerr << "done." << endl;
 
   cerr << "Loading aggregates...";
+  /* modified to avoid pg_catalog and information_schema system functions
   r = w.exec("select (select nspname from pg_namespace where oid = pronamespace), oid, prorettype, proname "
 	     "from pg_proc "
 	     "where prorettype::regtype::text not in ('event_trigger', 'trigger', 'opaque', 'internal') "
@@ -262,7 +283,23 @@ schema_pqxx::schema_pqxx(std::string &conninfo, bool no_catalog) : c(conninfo)
 	     "and proname !~ '^ri_fkey_' "
 	     "and not (proretset or " + procedure_is_window + ") "
 	     "and " + procedure_is_aggregate);
+  */
+  std::string aggregates_query =
+    "select (select nspname from pg_namespace where oid = pronamespace), "
+    "       oid, prorettype, proname "
+    "from pg_proc "
+    "where prorettype::regtype::text not in "
+    "      ('event_trigger', 'trigger', 'opaque', 'internal') "
+    "  and proname not in ('pg_event_trigger_table_rewrite_reason') "
+    "  and proname not in ('percentile_cont', 'dense_rank', 'cume_dist', "
+    "                      'rank', 'test_rank', 'percent_rank', "
+    "                      'percentile_disc', 'mode', 'test_percentile_disc') "
+    "  and proname !~ '^ri_fkey_' "
+    "  and not (proretset or " + procedure_is_window + ") "
+    "  and " + procedure_is_aggregate;
 
+r = w.exec(aggregates_query);
+  
   for (auto row : r) {
     routine proc(row[0].as<string>(),
 		 row[1].as<string>(),

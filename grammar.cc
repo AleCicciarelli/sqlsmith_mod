@@ -15,15 +15,20 @@ using namespace std;
 shared_ptr<table_ref> table_ref::factory(prod *p) {
   try {
     if (p->level < 3 + d6()) {
+      /*disabled to avoid subqueries subq0
       if (d6() > 3 && p->level < d6())
 	return make_shared<table_subquery>(p);
+  */
       if (d6() > 3)
 	return make_shared<joined_table>(p);
     }
+    /** //disable to avoid table sample bernoulli ecc.
     if (d6() > 3)
       return make_shared<table_or_query_name>(p);
     else
       return make_shared<table_sample>(p);
+    */
+    return make_shared<table_or_query_name>(p);
   } catch (runtime_error &e) {
     p->retry();
   }
@@ -32,11 +37,16 @@ shared_ptr<table_ref> table_ref::factory(prod *p) {
 
 table_or_query_name::table_or_query_name(prod *p) : table_ref(p) {
   t = random_pick(scope->tables);
-  refs.push_back(make_shared<aliased_relation>(scope->stmt_uid("ref"), t));
+  //disabled to avoid weird aliases (ref_*)
+  //refs.push_back(make_shared<aliased_relation>(scope->stmt_uid("ref"), t));
+  // use table name as alias too
+  refs.push_back(make_shared<aliased_relation>(t->ident(), t));
 }
 
 void table_or_query_name::out(std::ostream &out) {
-  out << t->ident() << " as " << refs[0]->ident();
+  //modified to avoid weird aliases
+  //out << t->ident() << " as " << refs[0]->ident();
+  out << t->ident();
 }
 
 target_table::target_table(prod *p, table *victim) : table_ref(p)
@@ -54,7 +64,9 @@ target_table::target_table(prod *p, table *victim) : table_ref(p)
 }
 
 void target_table::out(std::ostream &out) {
-  out << victim_->ident() << " as " << refs[0]->ident();
+  //disabled to avoid weird aliases
+  //out << victim_->ident() << " as " << refs[0]->ident();
+  out << victim_->ident();
 }
 
 table_sample::table_sample(prod *p) : table_ref(p) {
@@ -72,10 +84,13 @@ table_sample::table_sample(prod *p) : table_ref(p) {
 }
 
 void table_sample::out(std::ostream &out) {
+  /* disabled to avoid weird aliases
   out << t->ident() <<
     " as " << refs[0]->ident() <<
     " tablesample " << method <<
     " (" << percent << ") ";
+  */
+  out << t->ident();
 }
 
 table_subquery::table_subquery(prod *p, bool lateral)
@@ -201,7 +216,7 @@ from_clause::from_clause(prod *p) : prod(p) {
   reflist.push_back(table_ref::factory(this));
   for (auto r : reflist.back()->refs)
     scope->refs.push_back(&*r);
-
+  /*disabled to avoid lateral
   while (d6() > 5) {
     // add a lateral subquery
     if (!impedance::matched(typeid(lateral_subquery)))
@@ -210,6 +225,7 @@ from_clause::from_clause(prod *p) : prod(p) {
     for (auto r : reflist.back()->refs)
       scope->refs.push_back(&*r);
   }
+  */
 }
 
 select_list::select_list(prod *p) : prod(p)
@@ -221,7 +237,8 @@ select_list::select_list(prod *p) : prod(p)
     name << "c" << columns++;
     sqltype *t=e->type;
     assert(t);
-    derived_table.columns().push_back(column(name.str(), t));
+    //disabled to avoid weird aliases in column names
+    //derived_table.columns().push_back(column(name.str(), t));
   } while (d6() > 1);
 }
 
@@ -230,7 +247,9 @@ void select_list::out(std::ostream &out)
   int i = 0;
   for (auto expr = value_exprs.begin(); expr != value_exprs.end(); expr++) {
     indent(out);
-    out << **expr << " as " << derived_table.columns()[i].name;
+    //disabled to avoid weird aliases
+    //out << **expr << " as " << derived_table.columns()[i].name;
+    out << **expr;
     i++;
     if (expr+1 != value_exprs.end())
       out << ", ";
@@ -467,6 +486,7 @@ shared_ptr<prod> statement_factory(struct scope *s)
 {
   try {
     s->new_stmt();
+    /* disabled to have only selects
     if (d42() == 1)
       return make_shared<merge_stmt>((struct prod *)0, s);
     if (d42() == 1)
@@ -481,6 +501,7 @@ shared_ptr<prod> statement_factory(struct scope *s)
       return make_shared<select_for_update>((struct prod *)0, s);
     else if (d6() > 5)
       return make_shared<common_table_expression>((struct prod *)0, s);
+    */
     return make_shared<query_spec>((struct prod *)0, s);
   } catch (runtime_error &e) {
     return statement_factory(s);
