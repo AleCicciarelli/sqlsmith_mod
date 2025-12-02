@@ -137,11 +137,15 @@ struct routine {
     assert(data_type);
   }
   virtual string ident() {
+    /*modified to avoid schema.table names es. pg_catalog.routine_name 
     if (schema.size())
       return schema + "." + name;
     else
       return name;
   }
+    */
+    return name;
+  } 
 };
 
 #endif

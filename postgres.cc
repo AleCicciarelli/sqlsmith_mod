@@ -238,13 +238,13 @@ schema_pqxx::schema_pqxx(std::string &conninfo, bool no_catalog) : c(conninfo)
     "  and proname !~ '^ri_fkey_' "
     "  and not (proretset or " + procedure_is_aggregate + " or " + procedure_is_window + ") ";
 
-if (no_catalog) {
-    routines_query +=
-        "  and (select nspname from pg_namespace where oid = pronamespace) "
-        "      not in ('pg_catalog', 'information_schema') ";
-}
+  if (no_catalog) {
+      routines_query +=
+          "  and (select nspname from pg_namespace where oid = pronamespace) "
+          "      not in ('pg_catalog', 'information_schema') ";
+  }
 
-r = w.exec(routines_query);
+  r = w.exec(routines_query);
 
   for (auto row : r) {
     routine proc(row[0].as<string>(),
@@ -298,8 +298,8 @@ r = w.exec(routines_query);
     "  and not (proretset or " + procedure_is_window + ") "
     "  and " + procedure_is_aggregate;
 
-r = w.exec(aggregates_query);
-  
+  r = w.exec(aggregates_query);
+  /* modified to allow only standard SQL aggregates
   for (auto row : r) {
     routine proc(row[0].as<string>(),
 		 row[1].as<string>(),
@@ -307,6 +307,36 @@ r = w.exec(aggregates_query);
 		 row[3].as<string>());
     register_aggregate(proc);
   }
+  */
+  cerr << "Loaded aggregates: " << r.size() << endl;
+  for (auto row : r) {
+    
+    cerr << " - " << row[3].as<string>() 
+         << " (schema=" << row[0].as<string>() << ")" << endl;
+    string schema_name = row[0].as<string>();
+    string func_name   = row[3].as<string>();
+
+    // Added to allow only standard SQL aggregates
+    bool is_standard_agg =
+        func_name == "sum"   ||
+        func_name == "avg"   ||
+        func_name == "min"   ||
+        func_name == "max"   ||
+        func_name == "count";
+
+    if (!is_standard_agg)
+        continue;  // Skip all non-standard aggregates
+
+    routine proc(schema_name,
+                 row[1].as<string>(),
+                 oid2type[row[2].as<OID>()],
+                 func_name);
+
+    register_aggregate(proc);
+  }
+
+
+  
 
   cerr << "done." << endl;
 

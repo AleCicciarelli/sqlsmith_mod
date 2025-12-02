@@ -43,33 +43,8 @@ This required constraining or removing the following behaviours:
     \item nested aggregates (e.g., \texttt{SUM (MIN (x))});
 \end{itemize}
 
-Three source files were modified: \texttt{grammar.cc}, \texttt{expr.cc}, and
+Three source files were modified: \texttt{grammar.cc}, \texttt{expr.cc}, \texttt{postgres.cc} and
 \texttt{relmodel.hh}.
-
-\subsection{Modifications to \texttt{relmodel.hh}}
-The file \texttt{relmodel.hh} defines the representation of tables,
-relations, and aliasing.
-SQLSmith generates internal aliases such as \texttt{ref\_0}, \texttt{ref\_1},
-and derived column names such as \texttt{c0}, \texttt{c1}.
-
-The following changes were applied:
-\begin{itemize}
-    \item aliases in the table naming are disabled, using the table name directly.
-
-\end{itemize}
-
-This transforms outputs like:
-
-\begin{lstlisting}
-FROM public.partsupp
-FROM system.partsupp 
-\end{lstlisting}
-
-into:
-
-\begin{lstlisting}
-FROM partsupp
-\end{lstlisting}
 
 \subsection{Modifications to \texttt{grammar.cc}}
 The file \texttt{grammar.cc} controls the high-level structure of SQL queries.
@@ -89,6 +64,7 @@ The following customizations were applied:
     \item enforcing the use of only \texttt{SELECT} statements (disabling
           \texttt{DELETE}, \texttt{UPDATE}, \texttt{MERGE}, etc.);
 \end{itemize}
+
 
 \subsection{Modifications to \texttt{expr.cc}}
 The file \texttt{expr.cc} defines how expressions, predicates, and function calls
@@ -110,6 +86,42 @@ if (agg && dynamic_cast<funcall*>(p->pprod)) {
     \item removing complex or system-defined functions from the generative process.
 \end{enumerate}
 
+\subsection{Modifications to \texttt{postgres.cc}}
+The file \texttt{postgres.cc} defines PostgreSQL-specific functions and types.
+The following changes were applied:
+\begin{itemize}
+    \item removing PostgreSQL aggregates and routines from the generative process,
+          such as \texttt{pg\_catalog.random()}, \texttt{pg\_catalog.setseed()}.
+\end{itemize}
+\subsection{Modifications to \texttt{relmodel.hh}}
+The file \texttt{relmodel.hh} defines the representation of tables,
+relations, and aliasing.
+SQLSmith generates internal aliases such as \texttt{ref\_0}, \texttt{ref\_1},
+and derived column names such as \texttt{c0}, \texttt{c1}.
+
+The following changes were applied:
+\begin{itemize}
+    \item aliases in the table naming and routine naming are disabled, using the table name directly.
+
+\end{itemize}
+
+This transforms outputs like:
+
+\begin{lstlisting}
+FROM public.partsupp
+FROM system.partsupp 
+SELECT pg_catalog.min()
+\end{lstlisting}
+
+into:
+
+\begin{lstlisting}
+FROM partsupp
+FROM partsupp
+SELECT MIN()
+\end{lstlisting}
+
+
 \subsection{Resulting Behaviour}
 After applying these modifications, SQLSmith produces:
 \begin{itemize}
@@ -119,14 +131,5 @@ After applying these modifications, SQLSmith produces:
     \item aggregate functions without nesting;
 \end{itemize}
 
-A representative query produced after customization is:
-
-\begin{lstlisting}
-SELECT SUM(ps_supplycost), ps_suppkey
-FROM partsupp
-JOIN supplier ON partsupp.ps_suppkey = supplier.s_suppkey
-WHERE ps_supplycost IS NOT NULL
-LIMIT 120;
-\end{lstlisting}
 
 \end{document}
