@@ -133,6 +133,8 @@ column_reference::column_reference(prod *p, sqltype *type_constraint) : value_ex
 
 shared_ptr<bool_expr> bool_expr::factory(prod *p)
 {
+  /*
+  modified to disable too deep queries and noisy conditions (always true/false)
   try {
        if (p->level > d100())
 	    return make_shared<truth_value>(p);
@@ -146,7 +148,27 @@ shared_ptr<bool_expr> bool_expr::factory(prod *p)
 	    return make_shared<truth_value>(p);
        else
 	    return make_shared<exists_predicate>(p);
-//     return make_shared<distinct_pred>(q);
+  //   return make_shared<distinct_pred>(q);
+  } catch (runtime_error &e) {
+  }
+  p->retry();exist
+  return factory(p);
+   */
+  try {
+      // If we are already deep in the tree, avoid further nesting
+      if (p->level > 3) {
+        return make_shared<comparison_op>(p);
+      }
+
+      int roll = d100(); 
+      if (roll <= 70) {
+        // 60%: basic column/constant comparison  (col <op> value)
+        return make_shared<comparison_op>(p);
+      } else if (roll <= 80) {
+        // 20%: IS [NOT] NULL on a column
+        return make_shared<null_predicate>(p);
+      }
+
   } catch (runtime_error &e) {
   }
   p->retry();
@@ -181,10 +203,47 @@ distinct_pred::distinct_pred(prod *p) : bool_binop(p)
 comparison_op::comparison_op(prod *p) : bool_binop(p)
 {
   auto &idx = p->scope->schema->operators_returning_type;
-
+  // Get all operators that return boolean type
   auto iters = idx.equal_range(scope->schema->booltype);
-  oper = random_pick(random_pick(iters)->second);
+  //disabled to allow only basic operators
+  //oper = random_pick(random_pick(iters)->second);
 
+  //added to filter operators
+  // Candidate operators restricted to simple comparisons
+  std::vector<op*> candidates;
+  for (auto it = iters.first; it != iters.second; ++it) {
+    for (op *o : it->second) {
+
+      const std::string &name = o->name;
+
+      bool name_ok =
+        name == "="  ||
+        name == "<"  ||
+        name == ">"  ||
+        name == "<=" ||
+        name == ">=";
+
+      if (!name_ok)
+        continue;
+
+      // Avoid operators with internal or array type schemas (oid, tid, text[], etc.)
+      if (o->left  == scope->schema->internaltype ||
+          o->right == scope->schema->internaltype ||
+          o->left  == scope->schema->arraytype    ||
+          o->right == scope->schema->arraytype)
+        continue;
+      // If it reaches here, the operator is a valid candidate, add it to the list
+      candidates.push_back(o);
+    }
+  }
+
+  if (!candidates.empty()) {
+    oper = random_pick(candidates);
+  } else {
+    // Fallback if filtering failed: use original random choice
+    oper = random_pick(random_pick(iters)->second);
+  }
+  // End of added code
   lhs = value_expr::factory(this, oper->left);
   rhs = value_expr::factory(this, oper->right);
 
@@ -238,7 +297,9 @@ const_expr::const_expr(prod *p, sqltype *type_constraint)
   if (type == scope->schema->inttype)
     expr = to_string(d100());
   else if (type == scope->schema->booltype)
-    expr += (d6() > 3) ? scope->schema->true_literal : scope->schema->false_literal;
+  // modified to reduce always true/false conditions (previous (d6()> 3))
+
+    expr += (d6() > 1) ? scope->schema->true_literal : scope->schema->false_literal;
   else if (dynamic_cast<insert_stmt*>(p) && (d6() > 3))
     expr += "default";
   else
