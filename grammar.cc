@@ -171,6 +171,8 @@ joined_table::joined_table(prod *p) : table_ref(p) {
 
   condition = join_cond::factory(this, *lhs, *rhs);
 
+  /*disable to have only inner joins
+ 
   if (d6()<4) {
     type = "inner";
   } else if (d6()<4) {
@@ -178,6 +180,9 @@ joined_table::joined_table(prod *p) : table_ref(p) {
   } else {
     type = "right";
   }
+  */
+ // always inner join
+  type = "inner";
 
   for (auto ref: lhs->refs)
     refs.push_back(ref);

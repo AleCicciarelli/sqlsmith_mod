@@ -63,18 +63,20 @@ The following customizations were applied:
           derived column aliases (\texttt{c0}, \texttt{ref0}, \ldots);
     \item enforcing the use of only \texttt{SELECT} statements (disabling
           \texttt{DELETE}, \texttt{UPDATE}, \texttt{MERGE}, etc.);
+    \item allowed only inner joins by modifying the \texttt{join\_cond::factory}
+          method to always set the join type to \texttt{inner}.
 \end{itemize}
 
 
 \subsection{Modifications to \texttt{expr.cc}}
 The file \texttt{expr.cc} defines how expressions, predicates, and function calls
 are generated. Some modifications were applied, as:
-\begin{enumerate}
+\begin{itemize}
     \item \textbf{Disabling subqueries in expressions}
           (\texttt{atomic\_subselect});
     \item \textbf{Disabling window functions}
           (\texttt{window\_function});
-    \item \textbf{Enforcing non-nested aggregate functions} by modifying the
+    \item \textbf{Avoiding nested aggregate functions} by modifying the
           \texttt{funcall} constructor:
 \begin{lstlisting}
 
@@ -83,8 +85,18 @@ if (agg && dynamic_cast<funcall*>(p->pprod)) {
 }
 \end{lstlisting}
 
-    \item removing complex or system-defined functions from the generative process.
-\end{enumerate}
+    \item \textbf{Removing complex or system-defined functions} from the generative process.
+    \item \textbf{Removing exists predicates} from the generative process because it is not supported in ProvSQL.
+    \item \textbf{Modifying the set of available operators} to use only basic operators in comparisons.
+    \begin{lstlisting}
+        bool name_ok =
+        name == "="  ||
+        name == "<"  ||
+        name == ">"  ||
+        name == "<=" ||
+        name == ">=";
+    \end{lstlisting}
+\end{itemize}
 
 \subsection{Modifications to \texttt{postgres.cc}}
 The file \texttt{postgres.cc} defines PostgreSQL-specific functions and types.
