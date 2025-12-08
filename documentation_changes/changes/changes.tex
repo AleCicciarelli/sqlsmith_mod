@@ -1,17 +1,46 @@
 \documentclass{article}
 
+% --- Margini ---
+\usepackage[a4paper, left=3cm, right=3cm, top=2.5cm, bottom=3cm]{geometry}
+
+% --- Font e tipografia ---
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
-\usepackage{listings}
-\usepackage{courier}
-\usepackage{enumitem}
+\usepackage{lmodern}        % Font Latin Modern (migliore alternativa a CM)
+\usepackage{microtype}      % Microtipografia: migliora la leggibilità
 
+% --- Spaziatura ---
+\usepackage{setspace}
+\onehalfspacing             % Interlinea 1.5 (più leggibile)
+
+% --- Titoli più moderni ---
+\usepackage{titlesec}
+\titleformat{\section}{\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{1em}{}
+
+% --- Liste personalizzate ---
+\usepackage{enumitem}
+\setlist{itemsep=4pt, topsep=6pt}
+
+
+
+% --- Listings per codice ---
+\usepackage{listings}
+\usepackage{xcolor}
 \lstset{
     basicstyle=\ttfamily\small,
     breaklines=true,
+    numbers=left,
+    numberstyle=\scriptsize,
+    numbersep=8pt,
+    keywordstyle=\bfseries,
+    captionpos=b,
+    frame=single,
+    rulecolor=\color{black!30},
 }
 
 \begin{document}
+
 
 \section{Customizing SQLSmith for SQL Query Generation}
 
@@ -43,7 +72,7 @@ This required constraining or removing the following behaviours:
     \item nested aggregates (e.g., \texttt{SUM (MIN (x))});
 \end{itemize}
 
-Three source files were modified: \texttt{grammar.cc}, \texttt{expr.cc}, \texttt{postgres.cc} and
+Three source files were modified: \texttt{grammar.cc}, \texttt{expr.cc}, \texttt{expr.hh}, \texttt{postgres.cc} and
 \texttt{relmodel.hh}.
 
 \subsection{Modifications to \texttt{grammar.cc}}
@@ -97,7 +126,20 @@ if (agg && dynamic_cast<funcall*>(p->pprod)) {
         name == ">=";
     \end{lstlisting}
 \end{itemize}
-
+\subsection{Modifications to \texttt{expr.hh}}
+The file \texttt{expr.hh} defines various expression types.
+The following change was applied:
+\begin{itemize}
+    \item \textbf{Modifying the \texttt{is null} predicate} to always generate \texttt{IS NOT NULL} predicates.
+    This was a problem because ProvSQL does not give any provenance information for \texttt{IS NULL} predicates.
+\begin{lstlisting}
+    virtual void out(std::ostream &out) {
+        // modified to avoid IS NULL
+        //out << *expr << " is " << negate << "NULL";
+        out << *expr << " is not NULL";
+    }
+\end{lstlisting}
+\end{itemize}
 \subsection{Modifications to \texttt{postgres.cc}}
 The file \texttt{postgres.cc} defines PostgreSQL-specific functions and types.
 The following changes were applied:
