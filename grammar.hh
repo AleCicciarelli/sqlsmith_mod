@@ -133,6 +133,8 @@ struct query_spec : prod {
   shared_ptr<struct select_list> select_list;
   shared_ptr<bool_expr> search;
   std::string limit_clause;
+  // added to support group by clauses
+  std::string groupby_clause;
   struct scope myscope;
   virtual void out(std::ostream &out);
   query_spec(prod *p, struct scope *s, bool lateral = 0);

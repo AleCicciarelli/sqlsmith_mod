@@ -94,6 +94,15 @@ The following customizations were applied:
           \texttt{DELETE}, \texttt{UPDATE}, \texttt{MERGE}, etc.);
     \item allowed only inner joins by modifying the \texttt{join\_cond::factory}
           method to always set the join type to \texttt{inner}.
+    \item adding support for \texttt{GROUP BY} clauses when aggregates are
+          detected in the \texttt{SELECT} list. This was done by:
+    \begin{itemize}
+        \item detect aggregates in \texttt{select\_list} and
+              mark the parent \texttt{query\_spec} with a pending \texttt{GROUP BY}
+              clause;
+        \item generate a \texttt{GROUP BY} clause in \texttt{query\_spec::out}
+              if marked as pending. 
+    \end{itemize}
 \end{itemize}
 
 

@@ -9,8 +9,11 @@
 #include "grammar.hh"
 #include "schema.hh"
 #include "impedance.hh"
+#include <unordered_map>
 
 using namespace std;
+// To keep track of aliases per table name
+static std::unordered_map<std::string, int> alias_counter;
 
 shared_ptr<table_ref> table_ref::factory(prod *p) {
   try {
@@ -39,14 +42,21 @@ table_or_query_name::table_or_query_name(prod *p) : table_ref(p) {
   t = random_pick(scope->tables);
   //disabled to avoid weird aliases (ref_*)
   //refs.push_back(make_shared<aliased_relation>(scope->stmt_uid("ref"), t));
-  // use table name as alias too
-  refs.push_back(make_shared<aliased_relation>(t->ident(), t));
+  // use table name as alias adding a counter to avoid duplicates
+   t = random_pick(scope->tables);
+
+    // Increment counter for this table name
+    int idx = ++alias_counter[t->ident()];
+
+    // Create alias: tableName_idx
+    std::string alias = t->ident() + "_" + std::to_string(idx);
+
+    // Store alias
+    refs.push_back(make_shared<aliased_relation>(alias, t));
 }
 
 void table_or_query_name::out(std::ostream &out) {
-  //modified to avoid weird aliases
-  //out << t->ident() << " as " << refs[0]->ident();
-  out << t->ident();
+  out << t->ident() << " as " << refs[0]->ident();
 }
 
 target_table::target_table(prod *p, table *victim) : table_ref(p)
@@ -245,6 +255,29 @@ select_list::select_list(prod *p) : prod(p)
     //disabled to avoid weird aliases in column names
     //derived_table.columns().push_back(column(name.str(), t));
   } while (d6() > 1);
+  // Detect aggregate info for GROUP BY clause
+  bool found_aggregate = false;
+
+  for (auto &expr : value_exprs) {
+      if (auto f = dynamic_cast<funcall*>(expr.get())) {
+          if (f->is_aggregate)
+              found_aggregate = true;
+      }
+  }
+
+  // Store aggregate info into parent query_spec
+  if (found_aggregate) {
+    // go until query_spec (prod is not the total query spec)
+    prod* q = p;
+    while (q && !dynamic_cast<query_spec*>(q))
+    // take parent
+        q = q->pprod;
+
+    if (auto qs = dynamic_cast<query_spec*>(q))
+    // mark GROUP BY in query spec as pending
+        qs->groupby_clause = "__PENDING__";
+}
+  // End GROUP BY detection
 }
 
 void select_list::out(std::ostream &out)
@@ -269,6 +302,12 @@ void query_spec::out(std::ostream &out) {
   indent(out);
   out << "where ";
   out << *search;
+  // added to support group by clauses
+  if (!groupby_clause.empty()) {
+    indent(out);
+    out << groupby_clause;
+  }
+
   if (limit_clause.length()) {
     indent(out);
     out << limit_clause;
@@ -346,7 +385,27 @@ query_spec::query_spec(prod *p, struct scope *s, bool lateral) :
   
   from_clause = make_shared<struct from_clause>(this);
   select_list = make_shared<struct select_list>(this);
-  
+  // added GROUP-BY generation from detected aggregates
+  if (groupby_clause == "__PENDING__") {
+
+      std::ostringstream gb;
+      gb << "group by ";
+
+      bool first = true;
+      for (auto &expr : select_list->value_exprs) {
+          if (auto col = dynamic_cast<column_reference*>(expr.get())) {
+              if (!first) gb << ", ";
+              gb << *col;
+              first = false;
+          }
+      }
+
+      if (!first)
+          groupby_clause = gb.str();
+      else
+          groupby_clause.clear();
+  }
+  // end GROUP-BY generation
   set_quantifier = (d100() == 1) ? "distinct" : "";
 
   search = bool_expr::factory(this);
@@ -489,6 +548,7 @@ upsert_stmt::upsert_stmt(prod *p, struct scope *s, table *v)
 
 shared_ptr<prod> statement_factory(struct scope *s)
 {
+  alias_counter.clear();
   try {
     s->new_stmt();
     /* disabled to have only selects
