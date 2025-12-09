@@ -109,7 +109,10 @@ struct null_predicate : bool_expr {
     expr = value_expr::factory(this);
   }
   virtual void out(std::ostream &out) {
-    out << *expr << " is " << negate << "NULL";
+    // modified to avoid IS NULL
+    //out << *expr << " is " << negate << "NULL";
+    out << *expr << " is not NULL";
+
   }
   virtual void accept(prod_visitor *v) {
     v->visit(this);
