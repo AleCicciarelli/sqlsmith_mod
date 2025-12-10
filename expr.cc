@@ -246,7 +246,16 @@ comparison_op::comparison_op(prod *p) : bool_binop(p)
   // End of added code
   lhs = value_expr::factory(this, oper->left);
   rhs = value_expr::factory(this, oper->right);
-
+  // avoid comparison between same column from same table (autocomparison)
+  int tries = 0;
+  while (dynamic_cast<column_reference*>(lhs.get())
+         && dynamic_cast<column_reference*>(rhs.get())
+         && static_cast<column_reference*>(lhs.get())->reference
+            == static_cast<column_reference*>(rhs.get())->reference
+          && tries < 10) {
+      rhs = value_expr::factory(this, oper->right);
+      tries++;
+  }
   if (oper->left == oper->right
 	 && lhs->type != rhs->type) {
 
@@ -366,36 +375,70 @@ funcall::funcall(prod *p, sqltype *type_constraint, bool agg)
 funcall::funcall(prod *p, sqltype *type_constraint, bool agg)
   : value_expr(p), is_aggregate(agg)
 {
-  if (!agg)
-    fail("non-aggregate functions disabled");
+    if (!agg)
+        fail("funcall generated non-aggregate function");
 
-  // prevent nested aggregates
-  if (agg && dynamic_cast<funcall*>(p->pprod))
-    fail("nested aggregate not allowed");
+    // prevent nested aggregates
+    if (agg && dynamic_cast<funcall*>(p->pprod))
+        fail("nested aggregate not allowed");
+    
+    if (type_constraint == scope->schema->internaltype)
+    fail("cannot call functions involving internal type");
+    auto &idx = p->scope->schema->aggregates_returning_type;
 
-  auto &all_aggs = p->scope->schema->aggregates;
+retry:
+    routine *picked = nullptr;
 
-  if (all_aggs.empty())
-    fail("no aggregates available");
+    if (!type_constraint) {
+    proc = random_pick(random_pick(idx.begin(), idx.end())->second);
 
-  proc = &random_pick<>(all_aggs);
-  type = proc->restype;
+    } else {
+        auto iters = idx.equal_range(type_constraint);
+        proc = random_pick(random_pick(iters)->second);
+        if (proc && !type_constraint->consistent(proc->restype))
+            { retry(); goto retry; }
+    }
 
-  // COUNT(*) case
-  if (proc->argtypes.size() == 0)
-    return;
+    if (!proc) { retry(); goto retry; }
 
-  sqltype *argtype = proc->argtypes[0];
+    // FILTER illegal types
+    auto badtype = [&](sqltype* t) {
+        string n = t->name;
+        return (
+            n == "anyarray" ||
+            n == "anyelement" ||
+            n == "anyenum" ||
+            n == "internal" ||
+            n == "opaque" ||
+            n == "record" ||
+            n == "void"
+        );
+    };
 
-  shared_ptr<value_expr> arg;
+    if (badtype(proc->restype)) { retry(); goto retry; }
 
-  auto candidates = scope->refs_of_type(argtype);
-  if (!candidates.empty())
-      arg = make_shared<column_reference>(this, argtype);
-  else
-      arg = make_shared<const_expr>(this, argtype);
+    for (auto at : proc->argtypes)
+        if (badtype(at)) { retry(); goto retry; }
 
-  parms.push_back(arg);
+    type = proc->restype;
+
+    // COUNT(*)
+    if (proc->argtypes.empty())
+        return;
+
+    sqltype *argtype = proc->argtypes[0];
+    shared_ptr<value_expr> arg;
+
+    auto candidates = scope->refs_of_type(argtype);
+    if (!candidates.empty())
+        arg = make_shared<column_reference>(this, argtype);
+    else {
+        retry();
+        goto retry;
+    }
+
+
+    parms.push_back(arg);
 }
 
 
@@ -404,7 +447,9 @@ void funcall::out(std::ostream &out)
   out << proc->ident() << "(";
   for (auto expr = parms.begin(); expr != parms.end(); expr++) {
     indent(out);
-    out << "cast(" << **expr << " as " << (*expr)->type->name << ")";
+    // modified to avoid cast in function parameters because they can generate errors, ex; cast(url as float8)
+    //out << "cast(" << **expr << " as " << (*expr)->type->name << ")";
+    out << **expr;
     if (expr+1 != parms.end())
       out << ",";
   }

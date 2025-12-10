@@ -17,13 +17,13 @@ static std::unordered_map<std::string, int> alias_counter;
 
 shared_ptr<table_ref> table_ref::factory(prod *p) {
   try {
-    if (p->level < 3 + d6()) {
+    if (p->level < d6()) {
       /*disabled to avoid subqueries subq0
       if (d6() > 3 && p->level < d6())
 	return make_shared<table_subquery>(p);
   */
-      if (d6() > 3)
-	return make_shared<joined_table>(p);
+    if (d6() > 3)
+	    return make_shared<joined_table>(p);
     }
     /** //disable to avoid table sample bernoulli ecc.
     if (d6() > 3)
@@ -120,17 +120,39 @@ void table_subquery::accept(prod_visitor *v) {
 
 shared_ptr<join_cond> join_cond::factory(prod *p, table_ref &lhs, table_ref &rhs)
 {
-     try {
-	  if (d6() < 6)
-	       return make_shared<expr_join_cond>(p, lhs, rhs);
-	  else
-	       return make_shared<simple_join_cond>(p, lhs, rhs);
+    try {
+      /*removed expr_join to avoid total random condition in join*/
+      /*
+      if (d6() < 6)
+          return make_shared<expr_join_cond>(p, lhs, rhs);
+      else
+          return make_shared<simple_join_cond>(p, lhs, rhs);
+      */
+      return make_shared<simple_join_cond>(p, lhs, rhs);
      } catch (runtime_error &e) {
 	  p->retry();
      }
      return factory(p, lhs, rhs);
 }
+// function to decide if a column is good for joining (not text/blob etc but only int types or columns with id,key,ref in name)
+static bool is_good_join_column(const column &c) {
+    const std::string &n = c.name;
 
+    // Prefer columns that are clearly keys
+    if (n.find("id") != std::string::npos ||
+        n.find("ID") != std::string::npos ||
+        n.find("key") != std::string::npos ||
+        n.find("ref") != std::string::npos)
+        return true;
+
+    // Otherwise: allow only integer-like types
+    if (c.type && c.type->name == "int4") return true;
+    if (c.type && c.type->name == "int8") return true;
+    if (c.type && c.type->name == "int2") return true;
+
+    return false;
+}
+/* changed to avoid useless joins
 simple_join_cond::simple_join_cond(prod *p, table_ref &lhs, table_ref &rhs)
      : join_cond(p, lhs, rhs)
 {
@@ -141,7 +163,9 @@ retry:
     { retry(); goto retry; }
 
   named_relation *right_rel = &*random_pick(rhs.refs);
-
+  //avoid joining same table
+  if (left_rel->ident() == right_rel->ident())
+    { retry(); goto retry; }
   column &c1 = random_pick(left_rel->columns());
 
   for (auto c2 : right_rel->columns()) {
@@ -154,6 +178,48 @@ retry:
   if (condition == "") {
     retry(); goto retry;
   }
+}
+*/
+simple_join_cond::simple_join_cond(prod *p, table_ref &lhs, table_ref &rhs)
+     : join_cond(p, lhs, rhs)
+{
+retry:
+    // Pick random left/right relations
+    named_relation *left_rel  = &*random_pick(lhs.refs);
+    named_relation *right_rel = &*random_pick(rhs.refs);
+
+    // Avoid joining same table
+    if (left_rel->ident() == right_rel->ident())
+        { retry(); goto retry; }
+
+    // Find a good left column
+    column *left_col = nullptr;
+    for (auto &c : left_rel->columns()) {
+        if (is_good_join_column(c)) {
+            left_col = &c;
+            break;
+        }
+    }
+    if (!left_col)
+        { retry(); goto retry; }
+
+    // Find a matching good right column
+    column *right_col = nullptr;
+    for (auto &c : right_rel->columns()) {
+        if (is_good_join_column(c) &&
+            c.type == left_col->type) {
+            right_col = &c;
+            break;
+        }
+    }
+    if (!right_col)
+        { retry(); goto retry; }
+
+    // Build final JOIN predicate
+    condition =
+        left_rel->ident() + "." + left_col->name +
+        " = " +
+        right_rel->ident() + "." + right_col->name + " ";
 }
 
 void simple_join_cond::out(std::ostream &out) {
@@ -176,8 +242,18 @@ void expr_join_cond::out(std::ostream &out) {
 }
 
 joined_table::joined_table(prod *p) : table_ref(p) {
+  // Prevent excessive join tree size
+  if (scope->refs.size() > 3) {
+      fail("Too many joins");
+  }
+
   lhs = table_ref::factory(this);
   rhs = table_ref::factory(this);
+
+  // Prevent joining the same underlying table twice
+  while (lhs->refs[0]->ident() == rhs->refs[0]->ident()) {
+      rhs = table_ref::factory(this);
+  }
 
   condition = join_cond::factory(this, *lhs, *rhs);
 
@@ -410,11 +486,17 @@ query_spec::query_spec(prod *p, struct scope *s, bool lateral) :
 
   search = bool_expr::factory(this);
 
-  if (d6() > 2) {
+  /*if (d6() > 2) {
     ostringstream cons;
     cons << "limit " << d100() + d100();
     limit_clause = cons.str();
-  }
+  }*/
+ // modified to force limits in each query
+
+  ostringstream cons;
+  cons << "limit " << d42();
+  limit_clause = cons.str();
+
 }
 
 long prepare_stmt::seq;
