@@ -102,6 +102,10 @@ The following customizations were applied:
               clause;
         \item generate a \texttt{GROUP BY} clause in \texttt{query\_spec::out}
               if marked as pending. 
+        \item ensuring that only non-aggregate columns are included in the
+              \texttt{GROUP BY} clause by modifying the relevant section in
+              \texttt{query\_spec::factory}.
+        \item avoid the use of \texttt{DISTINCT} when a \texttt{GROUP BY} clause is present.
     \end{itemize}
 \end{itemize}
 
@@ -134,6 +138,8 @@ if (agg && dynamic_cast<funcall*>(p->pprod)) {
         name == "<=" ||
         name == ">=";
     \end{lstlisting}
+    \item \textbf{Modified function symple\_join to allow joins only on ids, refs, or integer columns.}
+
 \end{itemize}
 \subsection{Modifications to \texttt{expr.hh}}
 The file \texttt{expr.hh} defines various expression types.

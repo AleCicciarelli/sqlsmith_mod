@@ -58,7 +58,9 @@ shared_ptr<value_expr> value_expr::factory(prod *p, sqltype *type_constraint)
     if (dynamic_cast<select_list*>(p)) {
       // ~1/6 of the time, generate an aggregate instead of a simple expr
       if (d6() == 1) {
-        return make_shared<funcall>(p, type_constraint, true);
+        // only numeric types for aggregates 
+        sqltype* numeric = p->scope->schema->inttype;
+        return make_shared<funcall>(p, numeric, true);
       }
     }
 

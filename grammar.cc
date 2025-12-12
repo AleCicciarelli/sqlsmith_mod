@@ -464,26 +464,41 @@ query_spec::query_spec(prod *p, struct scope *s, bool lateral) :
   // added GROUP-BY generation from detected aggregates
   if (groupby_clause == "__PENDING__") {
 
-      std::ostringstream gb;
-      gb << "group by ";
+    std::vector<std::string> nonagg_cols;
 
-      bool first = true;
-      for (auto &expr : select_list->value_exprs) {
-          if (auto col = dynamic_cast<column_reference*>(expr.get())) {
-              if (!first) gb << ", ";
-              gb << *col;
-              first = false;
-          }
-      }
+    for (auto &expr : select_list->value_exprs) {
+        // no aggregates in group by
+        if (dynamic_cast<funcall*>(expr.get()))
+            continue;
 
-      if (!first)
-          groupby_clause = gb.str();
-      else
-          groupby_clause.clear();
-  }
+        if (auto col = dynamic_cast<column_reference*>(expr.get())) {
+            nonagg_cols.push_back(col->reference);
+        }
+    }
+
+    // no duplicates  
+    std::sort(nonagg_cols.begin(), nonagg_cols.end());
+    nonagg_cols.erase(std::unique(nonagg_cols.begin(), nonagg_cols.end()), nonagg_cols.end());
+
+    if (!nonagg_cols.empty()) {
+        std::ostringstream gb;
+        gb << "group by ";
+        for (size_t i = 0; i < nonagg_cols.size(); i++) {
+            gb << nonagg_cols[i];
+            if (i + 1 < nonagg_cols.size())
+                gb << ", ";
+        }
+        groupby_clause = gb.str();
+    } else {
+        groupby_clause.clear();
+    }
+}
   // end GROUP-BY generation
   set_quantifier = (d100() == 1) ? "distinct" : "";
-
+  // if group by exists, remove distinct to avoid conflicts
+  if (!groupby_clause.empty() && set_quantifier == "distinct") {
+    set_quantifier.clear(); 
+}
   search = bool_expr::factory(this);
 
   /*if (d6() > 2) {
