@@ -139,6 +139,7 @@ if (agg && dynamic_cast<funcall*>(p->pprod)) {
         name == ">=";
     \end{lstlisting}
     \item \textbf{Modified function symple\_join to allow joins only on ids, refs, or integer columns.}
+    \item \textbf{Modified funcall::funcall to avoid aggregates on types like text, varchar, bpchar that can slow down the execution.}
 
 \end{itemize}
 \subsection{Modifications to \texttt{expr.hh}}
