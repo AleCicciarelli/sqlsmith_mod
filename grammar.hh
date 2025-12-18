@@ -127,6 +127,17 @@ struct select_list : prod {
   }
 };
 
+struct query_meta{
+  // struct to keep track of query characteristics
+  //joins
+  int num_joins = 0;
+  //set operations
+  bool has_union = false;
+  bool has_intersect = false;
+  bool has_negation = false;
+  //aggregates
+  int num_aggregates = 0;
+};
 struct query_spec : prod {
   std::string set_quantifier;
   shared_ptr<struct from_clause> from_clause;
@@ -136,6 +147,8 @@ struct query_spec : prod {
   // added to support group by clauses
   std::string groupby_clause;
   struct scope myscope;
+  // metadata about the generated query
+  query_meta metadata;
   virtual void out(std::ostream &out);
   query_spec(prod *p, struct scope *s, bool lateral = 0);
   virtual void accept(prod_visitor *v) {
@@ -145,6 +158,7 @@ struct query_spec : prod {
     search->accept(v);
   }
 };
+
 
 struct select_for_update : query_spec {
   const char *lockmode;
@@ -311,6 +325,23 @@ struct update_returning : update_stmt {
     select_list->accept(v);
   }
 };
+struct set_query : prod {
+  enum set_op_t { UNION_OP, INTERSECT_OP, EXCEPT_OP };
+
+  shared_ptr<query_spec> lhs;
+  shared_ptr<query_spec> rhs;
+  set_op_t op;
+  query_meta metadata;
+  set_query(prod *p, struct scope *s);
+
+  virtual void out(std::ostream &out);
+  virtual void accept(prod_visitor *v) {
+    v->visit(this);
+    lhs->accept(v);
+    rhs->accept(v);
+  }
+};
+
 
 shared_ptr<prod> statement_factory(struct scope *s);
 
@@ -323,5 +354,42 @@ struct common_table_expression : prod {
   virtual void accept(prod_visitor *v);
   common_table_expression(prod *parent, struct scope *s);
 };
+
+
+
+
+struct query_stats_visitor : prod_visitor {
+  query_spec *q;
+
+  query_stats_visitor(query_spec *query)
+    : q(query) {}
+
+  void visit(prod *p) override {
+
+    // JOIN = joined_table
+    if (dynamic_cast<joined_table*>(p)) {
+      q->metadata.num_joins++;
+      return;
+    }
+
+    // AGGREGATES = funcall con is_aggregate = true
+    if (auto f = dynamic_cast<funcall*>(p)) {
+      if (f->is_aggregate)
+        q->metadata.num_aggregates++;
+      return;
+    }
+    // SET OPERATIONS = set_query
+    if (auto sq = dynamic_cast<set_query*>(p)) {
+    if (sq->op == set_query::UNION_OP)
+      q->metadata.has_union = true;
+    else if (sq->op == set_query::INTERSECT_OP)
+      q->metadata.has_intersect = true;
+    else if (sq->op == set_query::EXCEPT_OP)
+      q->metadata.has_negation = true;
+    } 
+  }
+};
+
+
 
 #endif

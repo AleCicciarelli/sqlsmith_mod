@@ -56,6 +56,25 @@ extern "C" void cerr_log_handler(int)
     global_cerr_logger->report();
   exit(1);
 }
+static void print_query_metadata(std::ostream &out, prod *gen) {
+  query_meta meta;
+
+  if (auto qs = dynamic_cast<query_spec*>(gen)) {
+    meta = qs->metadata;
+  } else if (auto sq = dynamic_cast<set_query*>(gen)) {
+    meta = sq->metadata;
+  } else {
+    return; // altri statement: niente metadata
+  }
+
+  out << "-- meta {"
+      << "\"num_joins\":" << meta.num_joins
+      << ",\"num_aggregates\":" << meta.num_aggregates
+      << ",\"has_union\":" << (meta.has_union ? "true" : "false")
+      << ",\"has_intersect\":" << (meta.has_intersect ? "true" : "false")
+      << ",\"has_negation\":" << (meta.has_negation ? "true" : "false")
+      << "}\n";
+}
 
 int main(int argc, char *argv[])
 {
@@ -156,16 +175,25 @@ int main(int argc, char *argv[])
 
       if (options.count("dry-run")) {
 	while (1) {
-	  shared_ptr<prod> gen = statement_factory(&scope);
-	  gen->out(cout);
-	  for (auto l : loggers)
-	    l->generated(*gen);
-	  cout << ";" << endl;
-	  queries_generated++;
+    shared_ptr<prod> gen = statement_factory(&scope);
 
-	  if (options.count("max-queries")
-	      && (queries_generated >= stol(options["max-queries"])))
-	      return 0;
+      //  metadata comment
+      cout << "\n";                 
+      print_query_metadata(cout, gen.get());
+
+      //  query
+      gen->out(cout);
+      cout << ";" << endl;
+
+      //  logging
+      for (auto l : loggers)
+        l->generated(*gen);
+
+      queries_generated++;
+
+      if (options.count("max-queries")
+          && (queries_generated >= stol(options["max-queries"])))
+        return 0;
 	}
       }
 
@@ -204,10 +232,10 @@ int main(int argc, char *argv[])
 	    
 	    /* Invoke top-level production to generate AST */
 	    shared_ptr<prod> gen = statement_factory(&scope);
-
+      print_query_metadata(cout, gen.get());
 	    for (auto l : loggers)
 	      l->generated(*gen);
-	  
+
 	    /* Generate SQL from AST */
 	    ostringstream s;
 	    gen->out(s);

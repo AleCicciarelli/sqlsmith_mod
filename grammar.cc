@@ -10,10 +10,97 @@
 #include "schema.hh"
 #include "impedance.hh"
 #include <unordered_map>
-
+#include <unordered_set>
 using namespace std;
 // To keep track of aliases per table name
 static std::unordered_map<std::string, int> alias_counter;
+struct projection_slot {
+  sqltype *type;
+  bool is_aggregate;
+};
+// Build a projection template from a select_list
+static vector<projection_slot>
+build_projection_template(select_list *sl) {
+  vector<projection_slot> tpl;
+
+  for (auto &e : sl->value_exprs) {
+    projection_slot slot;
+    slot.type = e->type;
+    slot.is_aggregate = false;
+
+    if (auto f = dynamic_cast<funcall*>(e.get())) {
+      if (f->is_aggregate)
+        slot.is_aggregate = true;
+    }
+
+    tpl.push_back(slot);
+  }
+  return tpl;
+}
+// Generate an expression from a projection slot
+static shared_ptr<value_expr>
+generate_expr_from_slot(prod *p,
+                         const projection_slot &slot) {
+  if (slot.is_aggregate) {
+    return make_shared<funcall>(p, slot.type, true);
+  }
+  return value_expr::factory(p, slot.type);
+}
+// Construct a set_query production
+set_query::set_query(prod *p, struct scope *s)
+  : prod(p)
+{
+  // LHS: select 
+  lhs = make_shared<query_spec>(this, s);
+
+  // extract schema (union compatibility)
+  auto tpl = build_projection_template(lhs->select_list.get());
+
+  // RHS: select 
+  rhs = make_shared<query_spec>(this, s);
+
+  // generate compatible select list
+  rhs->select_list->value_exprs.clear();
+
+  for (auto &slot : tpl) {
+    auto e = generate_expr_from_slot(rhs->select_list.get(), slot);
+    rhs->select_list->value_exprs.push_back(e);
+  }
+
+  rhs->select_list->columns =
+      rhs->select_list->value_exprs.size();
+
+  // choose set operation
+  int r = d6();
+  if (r <= 2) op = UNION_OP;
+  else if (r <= 4) op = INTERSECT_OP;
+  else op = EXCEPT_OP;
+
+
+  // aggregate
+  metadata.num_joins =
+      lhs->metadata.num_joins + rhs->metadata.num_joins;
+
+  metadata.num_aggregates =
+      lhs->metadata.num_aggregates + rhs->metadata.num_aggregates;
+
+  metadata.has_union = (op == UNION_OP);
+  metadata.has_intersect = (op == INTERSECT_OP);
+  metadata.has_negation = (op == EXCEPT_OP);
+
+  
+}
+void set_query::out(std::ostream &out) {
+  out << "(" << *lhs << ")\n";
+
+  switch (op) {
+    case UNION_OP: out << "UNION\n"; break;
+    case INTERSECT_OP: out << "INTERSECT\n"; break;
+    case EXCEPT_OP: out << "EXCEPT\n"; break;
+  }
+
+  out << "(" << *rhs << ")";
+}
 
 shared_ptr<table_ref> table_ref::factory(prod *p) {
   try {
@@ -321,8 +408,19 @@ from_clause::from_clause(prod *p) : prod(p) {
 
 select_list::select_list(prod *p) : prod(p)
 {
+  std::unordered_set<std::string> used_columns;
+
   do {
+
     shared_ptr<value_expr> e = value_expr::factory(this);
+    // Avoid duplicate column references in SELECT list
+    if (auto col = dynamic_cast<column_reference*>(e.get())) {
+      if (used_columns.count(col->reference)) {
+        // duplicate found, retry
+        continue;
+      }
+      used_columns.insert(col->reference);
+    }
     value_exprs.push_back(e);
     ostringstream name;
     name << "c" << columns++;
@@ -371,6 +469,7 @@ void select_list::out(std::ostream &out)
 }
 
 void query_spec::out(std::ostream &out) {
+
   out << "select " << set_quantifier << " "
       << *select_list;
   indent(out);
@@ -511,6 +610,9 @@ query_spec::query_spec(prod *p, struct scope *s, bool lateral) :
   ostringstream cons;
   cons << "limit " << d42();
   limit_clause = cons.str();
+  // Gather query charateristics
+  query_stats_visitor visitor(this);
+  this->accept(&visitor);
 
 }
 
@@ -664,6 +766,10 @@ shared_ptr<prod> statement_factory(struct scope *s)
     else if (d6() > 5)
       return make_shared<common_table_expression>((struct prod *)0, s);
     */
+    // for set operations
+    if (d6() > 1) {
+      return make_shared<set_query>(nullptr, s);
+    }
     return make_shared<query_spec>((struct prod *)0, s);
   } catch (runtime_error &e) {
     return statement_factory(s);
