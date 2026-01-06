@@ -14,88 +14,70 @@
 using namespace std;
 // To keep track of aliases per table name
 static std::unordered_map<std::string, int> alias_counter;
-struct projection_slot {
-  sqltype *type;
-  bool is_aggregate;
-};
-// Build a projection template from a select_list
-static vector<projection_slot>
-build_projection_template(select_list *sl) {
-  vector<projection_slot> tpl;
+// Rebuild GROUP BY clause from SELECT list of query_spec
+static void rebuild_groupby_from_select_list(query_spec *qs) {
+  bool has_agg = false;
+  std::vector<std::string> group_terms;
 
-  for (auto &e : sl->value_exprs) {
-    projection_slot slot;
-    slot.type = e->type;
-    slot.is_aggregate = false;
-
-    if (auto f = dynamic_cast<funcall*>(e.get())) {
-      if (f->is_aggregate)
-        slot.is_aggregate = true;
+  for (auto &expr : qs->select_list->value_exprs) {
+    if (auto f = dynamic_cast<funcall*>(expr.get())) {
+      if (f->is_aggregate) has_agg = true;
+      continue;
     }
+    if (auto col = dynamic_cast<column_reference*>(expr.get())) {
+      group_terms.push_back(col->reference);
+    }
+  }
 
-    tpl.push_back(slot);
+  if (!has_agg) { qs->groupby_clause.clear(); return; }
+
+  std::sort(group_terms.begin(), group_terms.end());
+  group_terms.erase(std::unique(group_terms.begin(), group_terms.end()), group_terms.end());
+
+  if (group_terms.empty()) { qs->groupby_clause.clear(); return; }
+
+  std::ostringstream gb;
+  gb << "group by ";
+  for (size_t i = 0; i < group_terms.size(); i++) {
+    gb << group_terms[i];
+    if (i + 1 < group_terms.size()) gb << ", ";
   }
-  return tpl;
-}
-// Generate an expression from a projection slot
-static shared_ptr<value_expr>
-generate_expr_from_slot(prod *p,
-                         const projection_slot &slot) {
-  if (slot.is_aggregate) {
-    return make_shared<funcall>(p, slot.type, true);
-  }
-  return value_expr::factory(p, slot.type);
+  qs->groupby_clause = gb.str();
 }
 // Construct a set_query production
 set_query::set_query(prod *p, struct scope *s)
   : prod(p)
 {
-  // LHS: select 
-  lhs = make_shared<query_spec>(this, s);
-
-  // extract schema (union compatibility)
-  auto tpl = build_projection_template(lhs->select_list.get());
-
-  // RHS: select 
-  rhs = make_shared<query_spec>(this, s);
-
-  // generate compatible select list
-  rhs->select_list->value_exprs.clear();
-
-  for (auto &slot : tpl) {
-    auto e = generate_expr_from_slot(rhs->select_list.get(), slot);
-    rhs->select_list->value_exprs.push_back(e);
-  }
-
-  rhs->select_list->columns =
-      rhs->select_list->value_exprs.size();
-
-  // choose set operation
   int r = d6();
-  if (r <= 2) op = UNION_OP;
-  else if (r <= 4) op = INTERSECT_OP;
+  if (r <= 3) op = UNION_OP;
   else op = EXCEPT_OP;
 
+  bool saved_flag = s->in_setop_branch;
+  s->in_setop_branch = true;
 
-  // aggregate
-  metadata.num_joins =
-      lhs->metadata.num_joins + rhs->metadata.num_joins;
+  lhs = make_shared<query_spec>(this, s);
 
-  metadata.num_aggregates =
-      lhs->metadata.num_aggregates + rhs->metadata.num_aggregates;
+  std::vector<sqltype*> proj_types;
+  proj_types.reserve(lhs->select_list->value_exprs.size());
+  for (auto &e : lhs->select_list->value_exprs)
+    proj_types.push_back(e->type);
 
+  rhs = make_shared<query_spec>(this, s, false, &proj_types);
+
+  s->in_setop_branch = saved_flag;
+
+  metadata.num_joins = lhs->metadata.num_joins + rhs->metadata.num_joins;
+  metadata.num_aggregates = lhs->metadata.num_aggregates + rhs->metadata.num_aggregates;
   metadata.has_union = (op == UNION_OP);
-  metadata.has_intersect = (op == INTERSECT_OP);
+  metadata.has_intersect = false;
   metadata.has_negation = (op == EXCEPT_OP);
-
-  
 }
 void set_query::out(std::ostream &out) {
   out << "(" << *lhs << ")\n";
 
   switch (op) {
+    //case INTERSECT_OP: out << "INTERSECT\n"; break;
     case UNION_OP: out << "UNION\n"; break;
-    case INTERSECT_OP: out << "INTERSECT\n"; break;
     case EXCEPT_OP: out << "EXCEPT\n"; break;
   }
 
@@ -429,29 +411,35 @@ select_list::select_list(prod *p) : prod(p)
     //disabled to avoid weird aliases in column names
     //derived_table.columns().push_back(column(name.str(), t));
   } while (d6() > 1);
-  // Detect aggregate info for GROUP BY clause
-  bool found_aggregate = false;
+  
+}
+// typed select_list constructor with forced projection types
+select_list::select_list(prod *p, const std::vector<sqltype*> &types) : prod(p)
+{
+  std::unordered_set<std::string> used_columns;
 
-  for (auto &expr : value_exprs) {
-      if (auto f = dynamic_cast<funcall*>(expr.get())) {
-          if (f->is_aggregate)
-              found_aggregate = true;
+  for (sqltype *t : types) {
+    shared_ptr<value_expr> e = value_expr::factory(this, t);
+
+    // Avoid duplicate column references in SELECT list (same logic as untyped)
+    if (auto col = dynamic_cast<column_reference*>(e.get())) {
+      if (used_columns.count(col->reference)) {
+        int guard = 0;
+        do {
+          e = value_expr::factory(this, t);
+          col = dynamic_cast<column_reference*>(e.get());
+          guard++;
+        } while (col && used_columns.count(col->reference) && guard < 25);
       }
+      if (col) used_columns.insert(col->reference);
+    }
+
+    value_exprs.push_back(e);
+    columns++;
   }
 
-  // Store aggregate info into parent query_spec
-  if (found_aggregate) {
-    // go until query_spec (prod is not the total query spec)
-    prod* q = p;
-    while (q && !dynamic_cast<query_spec*>(q))
-    // take parent
-        q = q->pprod;
-
-    if (auto qs = dynamic_cast<query_spec*>(q))
-    // mark GROUP BY in query spec as pending
-        qs->groupby_clause = "__PENDING__";
-}
-  // End GROUP BY detection
+  // IMPORTANT: do NOT do "__PENDING__" detection here.
+  // Group-by must be computed coherently inside query_spec after select_list is finalized.
 }
 
 void select_list::out(std::ostream &out)
@@ -548,13 +536,55 @@ void select_for_update::out(std::ostream &out) {
     out << " for " << lockmode;
   }
 }
-
-query_spec::query_spec(prod *p, struct scope *s, bool lateral) :
-  prod(p), myscope(s)
+query_spec::query_spec(prod *p, struct scope *s, bool lateral,
+                       const std::vector<sqltype*> *forced_proj_types)
+  : prod(p), myscope(s)
 {
   scope = &myscope;
   scope->tables = s->tables;
+  scope->in_setop_branch = s->in_setop_branch;
 
+  if (lateral)
+    scope->refs = s->refs;
+
+  from_clause = make_shared<struct from_clause>(this);
+
+  if (forced_proj_types) {
+    select_list = make_shared<struct select_list>(this, *forced_proj_types);
+  } else {
+    select_list = make_shared<struct select_list>(this);
+  }
+
+  // GROUP BY sempre coerente col select list
+  rebuild_groupby_from_select_list(this);
+
+  set_quantifier = (d100() == 1) ? "distinct" : "";
+  if (!groupby_clause.empty() && set_quantifier == "distinct")
+    set_quantifier.clear();
+
+  search = bool_expr::factory(this);
+
+  // limit (come fai tu oggi)
+  std::ostringstream cons;
+  cons << "limit " << d42();
+  limit_clause = cons.str();
+
+  // stats coerenti (dopo che tutto è definito)
+  query_stats_visitor visitor(this);
+  this->accept(&visitor);
+}
+query_spec::query_spec(prod *p, struct scope *s, bool lateral)
+  : query_spec(p, s, lateral, nullptr)
+{}
+/*
+query_spec::query_spec(prod *p, struct scope *s, bool lateral) :
+  prod(p), myscope(s)
+{
+
+  scope = &myscope;
+  scope->tables = s->tables;
+  // added to track if we are in a set operation branch
+  scope->in_setop_branch = s->in_setop_branch;
   if (lateral)
     scope->refs = s->refs;
   
@@ -599,14 +629,14 @@ query_spec::query_spec(prod *p, struct scope *s, bool lateral) :
     set_quantifier.clear(); 
 }
   search = bool_expr::factory(this);
-
+  */
   /*if (d6() > 2) {
     ostringstream cons;
     cons << "limit " << d100() + d100();
     limit_clause = cons.str();
   }*/
  // modified to force limits in each query
-
+  /*
   ostringstream cons;
   cons << "limit " << d42();
   limit_clause = cons.str();
@@ -615,7 +645,7 @@ query_spec::query_spec(prod *p, struct scope *s, bool lateral) :
   this->accept(&visitor);
 
 }
-
+*/
 long prepare_stmt::seq;
 
 void modifying_stmt::pick_victim()

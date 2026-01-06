@@ -87,6 +87,8 @@ struct scope {
   struct schema *schema;
   /// Counters for prefixed stmt-unique identifiers
   shared_ptr<map<string,unsigned int> > stmt_seq;
+  // added to track if we are in a set operation branch
+  bool in_setop_branch = false;
   scope(struct scope *parent = 0) : parent(parent) {
     if (parent) {
       schema = parent->schema;

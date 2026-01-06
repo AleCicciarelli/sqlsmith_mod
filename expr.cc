@@ -54,8 +54,10 @@ shared_ptr<value_expr> value_expr::factory(prod *p, sqltype *type_constraint)
 shared_ptr<value_expr> value_expr::factory(prod *p, sqltype *type_constraint)
 {
   try {
+    // Disable aggregates in set operation branches except in SELECT list
+    const bool forbid_aggs = p->scope && p->scope->in_setop_branch;
     // Allow aggregates only in SELECT list (not in WHERE, JOIN, etc.)
-    if (dynamic_cast<select_list*>(p)) {
+    if (dynamic_cast<select_list*>(p) && !forbid_aggs ) {
       // ~1/6 of the time, generate an aggregate instead of a simple expr
       if (d6() == 1) {
         return make_shared<funcall>(p, nullptr, true);

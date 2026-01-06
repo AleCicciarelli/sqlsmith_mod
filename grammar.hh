@@ -118,6 +118,8 @@ struct select_list : prod {
   relation derived_table;
   int columns = 0;
   select_list(prod *p);
+  select_list(prod *p, const std::vector<sqltype*> &types);
+
   virtual void out(std::ostream &out);
   ~select_list() { }
   virtual void accept(prod_visitor *v) {
@@ -151,6 +153,9 @@ struct query_spec : prod {
   query_meta metadata;
   virtual void out(std::ostream &out);
   query_spec(prod *p, struct scope *s, bool lateral = 0);
+  // new constructor with forced projection types
+  query_spec(prod *p, struct scope *s, bool lateral,
+            const std::vector<sqltype*> *forced_proj_types);
   virtual void accept(prod_visitor *v) {
     v->visit(this);
     select_list->accept(v);
@@ -188,6 +193,12 @@ struct modifying_stmt : prod {
   modifying_stmt(prod *p, struct scope *s, struct table *victim = 0);
 //   shared_ptr<modifying_stmt> modifying_stmt::factory(prod *p, struct scope *s);
   virtual void pick_victim();
+};
+/// Query constraints used during query generation
+struct query_constraints {
+  bool in_setop_branch = false;     //set op
+  bool allow_aggregates = true;     //false if UNION/EXCEPT
+  const std::vector<sqltype*> *projection_types = nullptr; // if not null: types to project
 };
 
 struct delete_stmt : modifying_stmt {
