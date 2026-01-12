@@ -47,6 +47,7 @@ struct schema_pqxx : public schema {
     return c.quote_name(id);
   }
   schema_pqxx(std::string &conninfo, bool no_catalog);
+  void load_foreign_keys(pqxx::work &txn);
 };
 
 struct dut_pqxx : dut_base {
@@ -63,5 +64,4 @@ struct dut_libpq : dut_base {
      void connect(std::string &conninfo);
      dut_libpq(std::string conninfo);
 };
-
 #endif

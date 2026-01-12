@@ -13,6 +13,7 @@
 #include "relmodel.hh"
 #include "random.hh"
 
+
 struct schema {
   sqltype *booltype;
   sqltype *inttype;
@@ -73,6 +74,22 @@ struct schema {
       return index.end();
     else
       return random_pick<>(cons.first, cons.second);
+  }
+  struct fk_edge {
+  table *from;            // table containing the FK
+  std::string from_col;   // FK column
+  table *to;              // referenced table
+  std::string to_col;     // referenced column (PK/UK)
+};
+  std::vector<fk_edge> fk_edges;
+
+  std::vector<fk_edge> edges_between(table *a, table *b) const {
+    std::vector<fk_edge> out;
+    for (auto &e : fk_edges) {
+      if ((e.from == a && e.to == b) || (e.from == b && e.to == a))
+        out.push_back(e);
+    }
+    return out;
   }
   schema() { }
   void generate_indexes();

@@ -103,8 +103,9 @@ struct joined_table : table_ref {
 
 struct from_clause : prod {
   std::vector<shared_ptr<table_ref> > reflist;
-  virtual void out(std::ostream &out);
+  virtual void out(std::ostream &out) override;
   from_clause(prod *p);
+  from_clause(prod *p, bool empty_tag);
   ~from_clause() { }
   virtual void accept(prod_visitor *v) {
     v->visit(this);
@@ -112,13 +113,37 @@ struct from_clause : prod {
       p->accept(v);
   }
 };
+// A raw SQL expression with a given type
+struct raw_expr : value_expr {
+  std::string sql;
+  raw_expr(prod *p, const std::string &s, sqltype *t) : value_expr(p), sql(s) { type = t; }
+  void out(std::ostream &o) override { o << sql; }
+  void accept(prod_visitor *v) override { v->visit(this); }
+};
+
+struct from_clause_raw : from_clause {
+  std::string raw;
+
+  from_clause_raw(prod *p, const std::string &raw_from)
+    : from_clause(p, true), raw(raw_from) {}
+
+  void out(std::ostream &out) override {
+    out << raw; 
+  }
+};
+
+// Projection item structure
+struct proj_item {
+  std::string ref;   
+  sqltype *type;     
+};
 
 struct select_list : prod {
   std::vector<shared_ptr<value_expr> > value_exprs;
   relation derived_table;
   int columns = 0;
   select_list(prod *p);
-  select_list(prod *p, const std::vector<sqltype*> &types);
+  select_list(prod *p, const std::vector<proj_item> &bp);
 
   virtual void out(std::ostream &out);
   ~select_list() { }
@@ -155,7 +180,8 @@ struct query_spec : prod {
   query_spec(prod *p, struct scope *s, bool lateral = 0);
   // new constructor with forced projection types
   query_spec(prod *p, struct scope *s, bool lateral,
-            const std::vector<sqltype*> *forced_proj_types);
+            const std::vector<proj_item> *forced_proj, const std::string *forced_from_sql,
+            const std::vector<named_relation*> *forced_refs);
   virtual void accept(prod_visitor *v) {
     v->visit(this);
     select_list->accept(v);
@@ -391,12 +417,12 @@ struct query_stats_visitor : prod_visitor {
     }
     // SET OPERATIONS = set_query
     if (auto sq = dynamic_cast<set_query*>(p)) {
-    if (sq->op == set_query::UNION_OP)
-      q->metadata.has_union = true;
-    else if (sq->op == set_query::INTERSECT_OP)
-      q->metadata.has_intersect = true;
-    else if (sq->op == set_query::EXCEPT_OP)
-      q->metadata.has_negation = true;
+      if (sq->op == set_query::UNION_OP)
+        q->metadata.has_union = true;
+      else if (sq->op == set_query::INTERSECT_OP)
+        q->metadata.has_intersect = true;
+      else if (sq->op == set_query::EXCEPT_OP)
+        q->metadata.has_negation = true;
     } 
   }
 };

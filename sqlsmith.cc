@@ -143,6 +143,7 @@ int main(int argc, char *argv[])
 
       scope scope;
       long queries_generated = 0;
+      cerr << "[main] calling fill_scope\n";
       schema->fill_scope(scope);
 
       if (options.count("rng-state")) {

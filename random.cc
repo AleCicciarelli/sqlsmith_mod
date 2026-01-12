@@ -3,7 +3,10 @@
 namespace smith {
   std::mt19937_64 rng;
 }
-
+int d4() {
+  static std::uniform_int_distribution<> pick(1, 4);
+  return pick(smith::rng);
+}
 int d6() {
   static std::uniform_int_distribution<> pick(1, 6);
   return pick(smith::rng);

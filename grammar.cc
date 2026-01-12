@@ -12,8 +12,35 @@
 #include <unordered_map>
 #include <unordered_set>
 using namespace std;
+// Helper function to render FROM clause of a query_spec
+static std::string render_from_sql(query_spec *qs) {
+  std::ostringstream oss;
+  oss << *(qs->from_clause);   // usa l'out() già esistente
+  return oss.str();
+}
+
+static std::vector<named_relation*> snapshot_refs(query_spec *qs) {
+  return qs->scope->refs;      // copia shallow dei puntatori
+}
+
 // To keep track of aliases per table name
 static std::unordered_map<std::string, int> alias_counter;
+
+// Extract blueprint from a query_spec: we require plain column_reference
+// (this makes EXCEPT deterministic and avoids type/name mismatches)
+static bool extract_projection_blueprint(query_spec *qs, std::vector<proj_item> &bp) {
+  bp.clear();
+  bp.reserve(qs->select_list->value_exprs.size());
+
+  for (auto &expr : qs->select_list->value_exprs) {
+    auto *cr = dynamic_cast<column_reference*>(expr.get());
+    if (!cr) return false;               // not clonable
+    if (!cr->type) return false;
+    bp.push_back({cr->reference, cr->type});
+  }
+  return !bp.empty();
+}
+
 // Rebuild GROUP BY clause from SELECT list of query_spec
 static void rebuild_groupby_from_select_list(query_spec *qs) {
   bool has_agg = false;
@@ -22,7 +49,7 @@ static void rebuild_groupby_from_select_list(query_spec *qs) {
   for (auto &expr : qs->select_list->value_exprs) {
     if (auto f = dynamic_cast<funcall*>(expr.get())) {
       if (f->is_aggregate) has_agg = true;
-      continue;
+      continue; // never group-by aggregates
     }
     if (auto col = dynamic_cast<column_reference*>(expr.get())) {
       group_terms.push_back(col->reference);
@@ -54,15 +81,23 @@ set_query::set_query(prod *p, struct scope *s)
 
   bool saved_flag = s->in_setop_branch;
   s->in_setop_branch = true;
-
   lhs = make_shared<query_spec>(this, s);
+  std::vector<proj_item> bp;
 
-  std::vector<sqltype*> proj_types;
-  proj_types.reserve(lhs->select_list->value_exprs.size());
-  for (auto &e : lhs->select_list->value_exprs)
-    proj_types.push_back(e->type);
+  int tries = 0;
+  while (!extract_projection_blueprint(lhs.get(), bp) && tries++ < 10) {
+    retry();
+    lhs = make_shared<query_spec>(this, s);
+  }
 
-  rhs = make_shared<query_spec>(this, s, false, &proj_types);
+  if (!bp.empty()) {
+    std::string lhs_from_sql = render_from_sql(lhs.get());
+    auto lhs_refs = snapshot_refs(lhs.get());
+    rhs = make_shared<query_spec>(this, s, false, &bp, &lhs_from_sql, &lhs_refs);
+  } else {
+    rhs = make_shared<query_spec>(this, s);
+  }
+
 
   s->in_setop_branch = saved_flag;
 
@@ -249,6 +284,17 @@ retry:
   }
 }
 */
+static table* base_table_of(named_relation *nr) {
+  if (!nr) return nullptr;
+
+  if (auto *t = dynamic_cast<table*>(nr))
+    return t;
+
+  if (auto *a = dynamic_cast<aliased_relation*>(nr))
+    return dynamic_cast<table*>(a->rel); // <-- matches your relmodel.hh exactly
+
+  return nullptr;
+}
 simple_join_cond::simple_join_cond(prod *p, table_ref &lhs, table_ref &rhs)
      : join_cond(p, lhs, rhs)
 {
@@ -260,7 +306,28 @@ retry:
     // Avoid joining same table
     if (left_rel->ident() == right_rel->ident())
         { retry(); goto retry; }
+    //  FK-based join 
+    table *lt = base_table_of(left_rel);
+    table *rt = base_table_of(right_rel);
 
+    if (lt && rt && scope && scope->schema) {
+      auto edges = scope->schema->edges_between(lt, rt);
+      if (!edges.empty()) {
+        auto e = random_pick(edges);
+
+        // emit predicate using the correct aliases
+        if (e.from == lt && e.to == rt) {
+          condition =
+            left_rel->ident() + "." + e.from_col + " = " +
+            right_rel->ident() + "." + e.to_col + " ";
+        } else {
+          condition =
+            right_rel->ident() + "." + e.from_col + " = " +
+            left_rel->ident() + "." + e.to_col + " ";
+        }
+        return;
+      }
+    }
     // Find a good left column
     column *left_col = nullptr;
     for (auto &c : left_rel->columns()) {
@@ -371,6 +438,8 @@ void from_clause::out(std::ostream &out) {
       out << ",";
   }
 }
+from_clause::from_clause(prod *p, bool /*empty_tag*/) : prod(p)
+{}
 
 from_clause::from_clause(prod *p) : prod(p) {
   reflist.push_back(table_ref::factory(this));
@@ -413,34 +482,16 @@ select_list::select_list(prod *p) : prod(p)
   } while (d6() > 1);
   
 }
-// typed select_list constructor with forced projection types
-select_list::select_list(prod *p, const std::vector<sqltype*> &types) : prod(p)
+// select_list constructor with blueprint
+select_list::select_list(prod *p, const std::vector<proj_item> &bp) : prod(p)
 {
-  std::unordered_set<std::string> used_columns;
-
-  for (sqltype *t : types) {
-    shared_ptr<value_expr> e = value_expr::factory(this, t);
-
-    // Avoid duplicate column references in SELECT list (same logic as untyped)
-    if (auto col = dynamic_cast<column_reference*>(e.get())) {
-      if (used_columns.count(col->reference)) {
-        int guard = 0;
-        do {
-          e = value_expr::factory(this, t);
-          col = dynamic_cast<column_reference*>(e.get());
-          guard++;
-        } while (col && used_columns.count(col->reference) && guard < 25);
-      }
-      if (col) used_columns.insert(col->reference);
-    }
-
-    value_exprs.push_back(e);
+  // blueprint already defines: exact column refs + exact order
+  for (auto &item : bp) {
+    value_exprs.push_back(make_shared<raw_expr>(this, item.ref, item.type));
     columns++;
   }
-
-  // IMPORTANT: do NOT do "__PENDING__" detection here.
-  // Group-by must be computed coherently inside query_spec after select_list is finalized.
 }
+
 
 void select_list::out(std::ostream &out)
 {
@@ -537,7 +588,9 @@ void select_for_update::out(std::ostream &out) {
   }
 }
 query_spec::query_spec(prod *p, struct scope *s, bool lateral,
-                       const std::vector<sqltype*> *forced_proj_types)
+                       const std::vector<proj_item> *forced_proj,
+                       const std::string *forced_from_sql,
+                       const std::vector<named_relation*> *forced_refs)
   : prod(p), myscope(s)
 {
   scope = &myscope;
@@ -547,34 +600,39 @@ query_spec::query_spec(prod *p, struct scope *s, bool lateral,
   if (lateral)
     scope->refs = s->refs;
 
-  from_clause = make_shared<struct from_clause>(this);
+  // FROM
+  if (forced_from_sql && forced_refs) {
+    from_clause = make_shared<from_clause_raw>(this, *forced_from_sql);
 
-  if (forced_proj_types) {
-    select_list = make_shared<struct select_list>(this, *forced_proj_types);
+    scope->refs.clear();
+    scope->refs.insert(scope->refs.end(), forced_refs->begin(), forced_refs->end());
   } else {
-    select_list = make_shared<struct select_list>(this);
+    from_clause = make_shared<struct from_clause>(this);
   }
 
-  // GROUP BY sempre coerente col select list
+  // SELECT
+  if (forced_proj) select_list = make_shared<struct select_list>(this, *forced_proj);
+  else            select_list = make_shared<struct select_list>(this);
+
   rebuild_groupby_from_select_list(this);
 
   set_quantifier = (d100() == 1) ? "distinct" : "";
   if (!groupby_clause.empty() && set_quantifier == "distinct")
     set_quantifier.clear();
 
+  // WHERE (ora vede scope->refs coerenti)
   search = bool_expr::factory(this);
 
-  // limit (come fai tu oggi)
   std::ostringstream cons;
-  cons << "limit " << d42();
+  cons << "limit " << d4();
   limit_clause = cons.str();
 
-  // stats coerenti (dopo che tutto è definito)
   query_stats_visitor visitor(this);
   this->accept(&visitor);
 }
+
 query_spec::query_spec(prod *p, struct scope *s, bool lateral)
-  : query_spec(p, s, lateral, nullptr)
+  : query_spec(p, s, lateral, nullptr, nullptr, nullptr)
 {}
 /*
 query_spec::query_spec(prod *p, struct scope *s, bool lateral) :

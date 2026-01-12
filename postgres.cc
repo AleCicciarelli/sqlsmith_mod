@@ -354,6 +354,10 @@ schema_pqxx::schema_pqxx(std::string &conninfo, bool no_catalog) : c(conninfo)
       proc.argtypes.push_back(t);
     }
   }
+
+  cerr << "done." << endl;
+  cerr << "Loading foreign keys...";
+  load_foreign_keys(w);
   cerr << "done." << endl;
 #ifdef HAVE_LIBPQXX7
   c.close();
@@ -448,4 +452,56 @@ void dut_libpq::test(const std::string &stmt)
     command("BEGIN;");
     command(stmt.c_str());
     command("ROLLBACK;");
+}
+
+// Helper function to find a table by name
+static table* find_table_by_name(schema *sch, const std::string &name) {
+  for (auto &t : sch->tables) {
+    if (t.name == name) return &t;
+  }
+  return nullptr;
+}
+
+void schema_pqxx::load_foreign_keys(pqxx::work &txn) {
+  try {
+    std::cerr << "[schema] load_foreign_keys begin\n";
+    auto r = txn.exec(R"SQL(
+      SELECT
+        tc.table_schema,
+        tc.table_name,
+        kcu.column_name,
+        ccu.table_schema AS foreign_table_schema,
+        ccu.table_name   AS foreign_table_name,
+        ccu.column_name  AS foreign_column_name
+      FROM information_schema.table_constraints AS tc
+      JOIN information_schema.key_column_usage AS kcu
+        ON tc.constraint_name = kcu.constraint_name
+       AND tc.table_schema = kcu.table_schema
+      JOIN information_schema.constraint_column_usage AS ccu
+        ON ccu.constraint_name = tc.constraint_name
+       AND ccu.table_schema = tc.table_schema
+      WHERE tc.constraint_type = 'FOREIGN KEY';
+    )SQL");
+
+    std::cerr << "[schema] fk query rows=" << r.size() << "\n";
+
+    for (auto row : r) {
+      std::string from_t = row["table_name"].c_str();
+      std::string from_c = row["column_name"].c_str();
+      std::string to_t   = row["foreign_table_name"].c_str();
+      std::string to_c   = row["foreign_column_name"].c_str();
+
+      table *from = find_table_by_name(this, from_t);
+      table *to   = find_table_by_name(this, to_t);
+      if (!from || !to) continue;
+
+      fk_edges.push_back(schema::fk_edge{from, from_c, to, to_c});
+    }
+
+    txn.commit();
+    std::cerr << "[schema] load_foreign_keys done fk_edges=" << fk_edges.size() << "\n";
+  } catch (const std::exception &e) {
+    std::cerr << "[schema] load_foreign_keys ERROR: " << e.what() << "\n";
+    throw; 
+}
 }
